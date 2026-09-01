@@ -22,8 +22,13 @@ def _post(path: str, body: dict) -> dict:
         r = requests.post(f"{EXPRESS_BASE}{path}", json=body, timeout=8)
         r.raise_for_status()
         return r.json()
+    except requests.exceptions.ConnectionError:
+        return {
+            "error": "backend_offline",
+            "message": f"Could not connect to Express backend at {EXPRESS_BASE}. Please tell the user the store database is currently offline or misconfigured."
+        }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": "unexpected_error", "message": str(e)}
 
 
 # ─────────────────────────────────────────────

@@ -104,7 +104,7 @@ class GroceryAgent:
 
                 # Execute the tool (performs HTTP call to Express backend)
                 result_str = execute_tool(tool_name, tool_args)
-                safe_print(f"Result length: {len(result_str)} characters")
+                safe_print(f"Tool result: {result_str}")
 
                 # Feed the tool's output back to the message history so the AI can read it
                 messages.append(

@@ -62,26 +62,59 @@ class SimpleRAGSystem:
             model="mistral-small-latest",
             temperature=0.2
         )
-        self.vector_db = []  # In-memory storage list of dicts: {"text": str, "vector": list[float]}
+        self.vector_db = []  # In-memory storage list of dicts: {"text": str, "vector": list[float], "source": str}
+
     def fit(self, file_path: str):
         """Loads, splits, embeds, and stores the documents in memory."""
         print(f"Loading document: {file_path}")
         text = load_documents(file_path)
-        
+
         print("Splitting text into chunks...")
         chunks = split_text(text)
         print(f"Generated {len(chunks)} chunks.")
-        
+
         print("Generating embeddings for all chunks...")
-        # Get embeddings list from Mistral API
         vectors = self.embeddings_model.embed_documents(chunks)
-        
-        # Store in our simple in-memory vector database
+
+        # Store in our simple in-memory vector database (tagged as 'knowledge')
         self.vector_db = [
-            {"text": chunk_t, "vector": vec}
+            {"text": chunk_t, "vector": vec, "source": "knowledge"}
             for chunk_t, vec in zip(chunks, vectors)
         ]
         print("Vector database initialization complete.")
+
+    def add_product_chunks(self, products: list[dict]):
+        """
+        Embeds static product data (name, category, description) and appends
+        to the vector DB. Old product entries are cleared first so a re-sync
+        always reflects the current catalog.
+        """
+        # Remove old product entries, keep knowledge entries
+        self.vector_db = [e for e in self.vector_db if e.get("source") != "product"]
+
+        if not products:
+            print("No products to embed.")
+            return 0
+
+        # Convert each product to a short text paragraph
+        texts = []
+        for p in products:
+            text = (
+                f"Product: {p.get('name', 'Unknown')}\n"
+                f"Category: {p.get('category', 'Uncategorized')}\n"
+                f"Description: {p.get('description', 'No description.')}\n"
+                f"Product ID: {p.get('id', '')}"
+            )
+            texts.append(text)
+
+        print(f"Embedding {len(texts)} product entries...")
+        vectors = self.embeddings_model.embed_documents(texts)
+
+        for text, vec in zip(texts, vectors):
+            self.vector_db.append({"text": text, "vector": vec, "source": "product"})
+
+        print(f"Product catalog synced: {len(texts)} entries added to vector DB.")
+        return len(texts)
     def retrieve(self, query: str, k: int = 2) -> list[dict]:
         """Runs similarity search using cosine similarity and returns top k chunks."""
         if not self.vector_db:

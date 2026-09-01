@@ -17,7 +17,7 @@ from tools import TOOL_SCHEMAS, execute_tool
 
 # Similarity score threshold (range 0.0 to 1.0).
 # If the closest document similarity score is below this, we skip adding it to prompt context.
-RAG_SIMILARITY_THRESHOLD = 0.75
+RAG_SIMILARITY_THRESHOLD = 0.65
 
 
 def safe_print(msg: str):
@@ -64,7 +64,7 @@ class GroceryAgent:
         """
         Main chat entrypoint:
           1. Looks up information in the local knowledge base (RAG).
-          2. Runs a loop (up to 5 turns) to let the LLM call tools consecutively.
+          2. Runs a loop (up to 8 turns) to let the LLM call tools consecutively.
         """
         safe_print(f"\n==================== USER REQUEST ====================")
         safe_print(f"User: {user_message}")
@@ -76,8 +76,9 @@ class GroceryAgent:
         # Step 2: Build starting messages list (System instruction + user message)
         messages = self._build_messages(user_message, user_id, rag_context)
 
-        # Step 3: Run the multi-turn loop (allows up to 5 steps, e.g. search -> find id -> add to cart)
-        for turn in range(5):
+        # Step 3: Run the multi-turn loop (up to 8 steps for complex tasks like
+        #         search -> get product ID -> add to cart -> confirm)
+        for turn in range(8):
             # Ask the AI model what to do next
             response = self.llm.invoke(messages)
             safe_print(f"\n[Turn {turn + 1}] AI Response: tool_calls={bool(response.tool_calls)}")
@@ -86,7 +87,7 @@ class GroceryAgent:
             if not response.tool_calls:
                 return remove_emojis(response.content)
 
-            # Otherwise, the AI decided to call one or more tools. 
+            # Otherwise, the AI decided to call one or more tools.
             # We record the AI's decision/message in our history.
             messages.append(response)
 
@@ -100,7 +101,7 @@ class GroceryAgent:
                     tool_args["user_id"] = user_id
 
                 safe_print(f"Executing: {tool_name}({json.dumps(tool_args)})")
-                
+
                 # Execute the tool (performs HTTP call to Express backend)
                 result_str = execute_tool(tool_name, tool_args)
                 safe_print(f"Result length: {len(result_str)} characters")
@@ -110,7 +111,11 @@ class GroceryAgent:
                     ToolMessage(content=result_str, tool_call_id=tool_call["id"])
                 )
 
-        return "I encountered too many steps trying to complete that request. Please try again."
+        return (
+            "I wasn't able to complete that in time. "
+            "Try being more specific, for example: "
+            "'search for apples', 'show my cart', or 'what are my recent orders?'"
+        )
 
     def _get_rag_context(self, query: str) -> str:
         """
@@ -152,24 +157,43 @@ class GroceryAgent:
             )
 
         system_content = (
-            f"You are a friendly and helpful AI Grocery Assistant for the InstaCart app.\n"
+            f"You are a helpful AI Grocery Assistant for the InstaCart app.\n"
             f"The current user's ID is: {user_id}\n\n"
 
-            "DECISION GUIDE - choose ONE of these three paths:\n"
-            "  A) TOOL CALL   - Use a tool when the question needs LIVE data from the store.\n"
-            "                   Examples: checking product stock, cart contents, order status,\n"
-            "                   current deals, prices, or any action like adding to cart.\n"
-            "  B) KNOWLEDGE   - Use the Knowledge Base context below for general grocery advice:\n"
-            "                   storage tips, recipes, ingredient lists, nutrition facts.\n"
-            "  C) DIRECT      - For simple greetings and general chat, just answer naturally.\n\n"
+            "=== TOOL-CALL RULES (MANDATORY) ===\n"
+            "You have access to live store tools. Use them FIRST before saying anything.\n"
+            "NEVER apologize or say you cannot check something without trying a tool first.\n\n"
 
-            "IMPORTANT RULES:\n"
-            "- Never make up product IDs. If you need a product_id but don't have it, call\n"
-            "  search_products first to find the product, then use the returned product id.\n"
-            "- After a tool returns results, summarize the data in plain, friendly English.\n"
-            "- Do NOT output raw JSON to the user.\n"
-            "- Do NOT prefix your response with labels like 'A)', 'B)', 'C)' or 'DIRECT'.\n"
-            "- Just answer naturally.\n"
+            "Use tools for ALL of the following (no exceptions):\n"
+            "- ANY question about whether a product exists, is available, or is in stock\n"
+            "  -> call search_products(query=<product name>)\n"
+            "- Viewing or managing the shopping cart\n"
+            "  -> call get_cart or modify_cart\n"
+            "- Adding, removing, or clearing items from the cart\n"
+            "  -> call modify_cart(user_id, product_id, action, quantity)\n"
+            "  -> If you don't have the product_id, call search_products first to find it\n"
+            "- Checking order history or delivery status\n"
+            "  -> call get_orders(user_id, query)\n"
+            "- Finding deals, discounts, or sale items\n"
+            "  -> call search_deals(query=<optional category>)\n"
+            "- Reading product reviews or ratings\n"
+            "  -> call search_reviews(product_id or query=<product name>)\n\n"
+
+            "=== TOOL RESULT RULES ===\n"
+            "- If search_products returns an empty list -> tell the user that product is not\n"
+            "  currently available in the store. Do NOT say the system is down.\n"
+            "- If a tool returns an error field -> retry once with simpler arguments before\n"
+            "  telling the user there was a problem.\n"
+            "- Always summarize tool results in plain, friendly English. Never show raw JSON.\n\n"
+
+            "=== KNOWLEDGE BASE RULES ===\n"
+            "Use the Knowledge Base ONLY for: storage tips, recipes, nutrition advice.\n"
+            "Do NOT use the Knowledge Base for live store data (stock, prices, orders).\n\n"
+
+            "=== GENERAL RULES ===\n"
+            "- Never invent product IDs. Always call search_products first if you need one.\n"
+            "- Never output raw JSON to the user.\n"
+            "- Answer naturally and concisely.\n"
             f"{rag_section}"
         )
 
